@@ -14,5 +14,21 @@ namespace Test
             var result = await redisClient.PingAsync();
             Assert.IsNotNull(result);
         }
+
+        [TestMethod]
+        public async Task TestSetAsync()
+        {
+            RedisClient redisClient = new RedisClient("127.0.0.1", 6379, "");
+            await redisClient.ConnectAsync();
+            var result = await redisClient.SetAsync("name", "Tom");
+        }
+
+        [TestMethod]
+        public async Task TestGetAsync()
+        {
+            RedisClient redisClient = new RedisClient("127.0.0.1", 6379, "");
+            await redisClient.ConnectAsync();
+            var result = await redisClient.GetAsync("name");
+        }
     }
 }

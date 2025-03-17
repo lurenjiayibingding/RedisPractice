@@ -68,7 +68,8 @@ namespace SimpleRedis
             // }
             // while (!_stream.DataAvailable);
 
-            return Encoding.UTF8.GetString(memoryStream.ToArray());
+            var result = Encoding.UTF8.GetString(memoryStream.ToArray());
+            return result;
         }
 
         /// <summary>
@@ -78,6 +79,68 @@ namespace SimpleRedis
         public async Task<string> PingAsync()
         {
             return await SendCommandAsync("*1\r\n$4\r\nPING\r\n");
+        }
+
+        public async Task<string> SetAsync(string key, string value)
+        {
+            var command = $"set {key} {value}";
+            return await SendCommandAsync(TransitionCommand(command));
+        }
+
+        public async Task<string> GetAsync(string key)
+        {
+            var command = $"get {key}";
+            return await SendCommandAsync(TransitionCommand(command));
+        }
+
+        /// <summary>
+        /// 将输入的命令转换为redis协议
+        /// </summary>
+        /// <param name="command">输入的命令</param>
+        /// <returns>转换为符合Redis协议的命令</returns>
+        /// <exception cref="ArgumentNullException"></exception>
+        public string TransitionCommand(string command)
+        {
+            if (string.IsNullOrWhiteSpace(command))
+            {
+                throw new ArgumentNullException("command", "参数为空");
+            }
+
+            int orderCount = 0;
+            var sbCommand = new StringBuilder();
+            var commandArray = command.Split(' ');
+            foreach (var item in commandArray)
+            {
+                if (string.IsNullOrWhiteSpace(item))
+                {
+                    continue;
+                }
+                orderCount++;
+                sbCommand.Append($"${item.Length}\r\n{item}\r\n");
+            }
+            sbCommand.Insert(0, $"*{orderCount}\r\n");
+            return sbCommand.ToString();
+        }
+
+        public string AnalysisRequest(string request)
+        {
+            var firstChar = request[0];
+            switch (firstChar)
+            {
+                case '+'://响应数据为简单字符串
+                    break;
+                case '-'://响应数据为错误信息
+                    break;
+                case ':'://响应数据为整数
+                    break;
+                case '$'://响应数据为批量字符串
+                    break;
+                case '*'://响应数据为数组
+                    break;
+                default:
+                    break;
+            }
+            return string.Empty;
         }
     }
 }
