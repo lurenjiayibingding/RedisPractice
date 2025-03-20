@@ -1,4 +1,8 @@
-﻿using System.Net.Sockets;
+﻿using SimpleRedis.Helper;
+using System.IO;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Text;
 
 namespace SimpleRedis
@@ -43,33 +47,40 @@ namespace SimpleRedis
         /// </summary>
         /// <param name="command"></param>
         /// <returns></returns>
-        public async Task<string> SendCommandAsync(string command)
+        public async Task<T> SendCommandAsync<T>(string command)
         {
-            var sendBuffer = Encoding.UTF8.GetBytes(command);
-            await _stream.WriteAsync(sendBuffer, 0, sendBuffer.Length);
-
-            using var memoryStream = new MemoryStream();
-            var receiveBuffer = new byte[1024];
-
-            while (true)
+            try
             {
-                var readLength = await _stream.ReadAsync(receiveBuffer, 0, receiveBuffer.Length);
-                memoryStream.Write(receiveBuffer, 0, readLength);
-                if (receiveBuffer[readLength - 2] == '\r' && receiveBuffer[readLength - 1] == '\n')
+                var sendBuffer = Encoding.UTF8.GetBytes(command);
+                await _stream.WriteAsync(sendBuffer, 0, sendBuffer.Length);
+
+                using var memoryStream = new MemoryStream();
+                var receiveBuffer = new byte[1024];
+                var readLength = 0;
+                var socketResult = await NetworkHelper.StockPollWaitForStreamToBeReadable(_tcpClient, 5000);
+                if (!socketResult)
                 {
-                    break;
+                    throw new Exception("Socket Poll Timeout");
                 }
+                while (_stream.DataAvailable && (readLength = await _stream.ReadAsync(receiveBuffer, 0, receiveBuffer.Length)) > 0)
+                {
+                    memoryStream.Write(receiveBuffer, 0, readLength);
+                }
+                var byteArray = memoryStream.ToArray();
+                return (T)AnalysisRequest(byteArray);
+
+
+                //await NetworkHelper.SimpleWaitForStreamToBeReadableAsync(_stream);
+                //using MemoryStream memoryStream = new MemoryStream();
+                //await _stream.CopyToAsync(memoryStream);
+                //var byteArray = memoryStream.ToArray();
+                //return AnalysisRequest(byteArray);
             }
-
-            // do
-            // {
-            //     var await _stream.ReadAsync(receiveBuffer, 0, receiveBuffer.Length);
-            //     memoryStream.Write(receiveBuffer, 0, receiveBuffer.Length);
-            // }
-            // while (!_stream.DataAvailable);
-
-            var result = Encoding.UTF8.GetString(memoryStream.ToArray());
-            return result;
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+                throw;
+            }
         }
 
         /// <summary>
@@ -78,19 +89,19 @@ namespace SimpleRedis
         /// <returns></returns>
         public async Task<string> PingAsync()
         {
-            return await SendCommandAsync("*1\r\n$4\r\nPING\r\n");
+            return await SendCommandAsync<string>("*1\r\n$4\r\nPING\r\n");
         }
 
         public async Task<string> SetAsync(string key, string value)
         {
             var command = $"set {key} {value}";
-            return await SendCommandAsync(TransitionCommand(command));
+            return await SendCommandAsync<string>(TransitionCommand(command));
         }
 
-        public async Task<string> GetAsync(string key)
+        public async Task<T> GetAsync<T>(string key)
         {
             var command = $"get {key}";
-            return await SendCommandAsync(TransitionCommand(command));
+            return await SendCommandAsync<T>(TransitionCommand(command));
         }
 
         /// <summary>
@@ -122,25 +133,84 @@ namespace SimpleRedis
             return sbCommand.ToString();
         }
 
-        public string AnalysisRequest(string request)
+        public Object AnalysisRequest(byte[] bytes)
         {
-            var firstChar = request[0];
+            var firstChar = bytes[0];
             switch (firstChar)
             {
-                case '+'://响应数据为简单字符串
+                case (byte)'+'://响应数据为简单字符串
+                case (byte)'-'://响应数据为错误信息
+                    return AnalysisSimpleOrErrorString(bytes);
+                case (byte)':'://响应数据为整数
+                    return AnalysisInteger(bytes);
+                case (byte)'$'://响应数据为批量字符串
+                    return AnalysisBatchString(bytes);
+                case (byte)'*'://响应数据为数组
                     break;
-                case '-'://响应数据为错误信息
+                case (byte)'%'://响应数据为Map(哈希表)
                     break;
-                case ':'://响应数据为整数
+                case (byte)'~'://响应数据为Set(集合)
                     break;
-                case '$'://响应数据为批量字符串
+                case (byte)'#'://响应数据为布尔值
                     break;
-                case '*'://响应数据为数组
+                case (byte)'_'://Null
+                    break;
+                case (byte)','://响应数据为浮点数
+                    break;
+                case (byte)'>'://响应数据为Push消息
                     break;
                 default:
                     break;
             }
             return string.Empty;
+        }
+
+        /// <summary>
+        /// 解析简单字符串或者错误信息
+        /// </summary>
+        /// <param name="bytes"></param>
+        /// <returns></returns>
+        private string AnalysisSimpleOrErrorString(byte[] bytes)
+        {
+            var result = Encoding.UTF8.GetString(bytes[1..^2]);
+            return result;
+        }
+
+        /// <summary>
+        /// 解析简单字符串或者错误信息
+        /// </summary>
+        /// <param name="bytes"></param>
+        /// <returns></returns>
+        private long AnalysisInteger(byte[] bytes)
+        {
+            var result = Convert.ToInt64(Encoding.UTF8.GetString(bytes[1..^2]));
+            return result;
+        }
+
+        /// <summary>
+        /// 解析批量字符串
+        /// </summary>
+        /// <param name="bytes"></param>
+        /// <returns></returns>
+        private string AnalysisBatchString(byte[] bytes)
+        {
+            int lengthStartIndex = 1;
+            int lengthEndIndex = 1;
+            for (int i = 1; i < bytes.Length; i++)
+            {
+                if (bytes[i + 1] == '\r' && bytes[i + 2] == '\n')
+                {
+                    break;
+                }
+                lengthEndIndex++;
+            }
+
+            var stringLength = Convert.ToInt32(Encoding.UTF8.GetString(bytes.AsSpan(lengthStartIndex, lengthEndIndex - lengthStartIndex + 1)));
+            if (stringLength <= 0)
+            {
+                return string.Empty;
+            }
+            return Encoding.UTF8.GetString(bytes.AsSpan(lengthEndIndex + 3, stringLength));
         }
     }
 }

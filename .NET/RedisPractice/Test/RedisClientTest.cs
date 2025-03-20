@@ -21,6 +21,7 @@ namespace Test
             RedisClient redisClient = new RedisClient("127.0.0.1", 6379, "");
             await redisClient.ConnectAsync();
             var result = await redisClient.SetAsync("name", "Tom");
+            Assert.IsTrue(string.Equals(result, "ok", StringComparison.InvariantCultureIgnoreCase));
         }
 
         [TestMethod]
@@ -28,7 +29,9 @@ namespace Test
         {
             RedisClient redisClient = new RedisClient("127.0.0.1", 6379, "");
             await redisClient.ConnectAsync();
-            var result = await redisClient.GetAsync("name");
+            await redisClient.SetAsync("name", "Tom");
+            var result = await redisClient.GetAsync<string>("name");
+            Assert.IsTrue(string.Equals(result, "Tom", StringComparison.InvariantCulture));
         }
     }
 }
