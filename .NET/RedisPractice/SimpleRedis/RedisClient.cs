@@ -1,4 +1,5 @@
 ﻿using SimpleRedis.Helper;
+using System.Buffers.Binary;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -11,6 +12,7 @@ namespace SimpleRedis
     {
         private string _host;
         private int _port;
+        private string _username;
         private string _password;
         private int _db;
         private TcpClient _tcpClient;
@@ -27,12 +29,16 @@ namespace SimpleRedis
         /// </summary>
         /// <param name="host"></param>
         /// <param name="port"></param>
+        /// <param name="userName"></param>
         /// <param name="password"></param>
-        public RedisClient(string host, int port, string password)
+        /// <param name="dbNum"></param>
+        public RedisClient(string host, int port, string userName, string password, int dbNum = 0)
         {
             _host = host;
             _port = port;
+            _username = userName;
             _password = password;
+            _db = dbNum;
         }
 
         public async Task ConnectAsync()
@@ -40,6 +46,24 @@ namespace SimpleRedis
             _tcpClient = new TcpClient();
             await _tcpClient.ConnectAsync(_host, _port);
             _stream = _tcpClient.GetStream();
+
+            if (!string.IsNullOrWhiteSpace(_username) || !string.IsNullOrWhiteSpace(_password))
+            {
+                var authCommand = string.Empty;
+                if (string.IsNullOrWhiteSpace(_username))
+                {
+                    authCommand = $"AUTH {_password}";
+                }
+                else
+                {
+                    authCommand = $"AUTH {_username} {_password}";
+                }
+                var result = await SendCommandAsync(TransitionCommand(authCommand));
+                if (!string.Equals(result, "ok", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    throw new Exception("用户名或者密码错误");
+                }
+            }
         }
 
         /// <summary>
@@ -47,7 +71,7 @@ namespace SimpleRedis
         /// </summary>
         /// <param name="command"></param>
         /// <returns></returns>
-        public async Task<T> SendCommandAsync<T>(string command)
+        public async Task<string> SendCommandAsync(string command)
         {
             try
             {
@@ -67,7 +91,7 @@ namespace SimpleRedis
                     memoryStream.Write(receiveBuffer, 0, readLength);
                 }
                 var byteArray = memoryStream.ToArray();
-                return (T)AnalysisRequest(byteArray);
+                return AnalysisRequest(byteArray);
 
 
                 //await NetworkHelper.SimpleWaitForStreamToBeReadableAsync(_stream);
@@ -89,19 +113,25 @@ namespace SimpleRedis
         /// <returns></returns>
         public async Task<string> PingAsync()
         {
-            return await SendCommandAsync<string>("*1\r\n$4\r\nPING\r\n");
+            return await SendCommandAsync("*1\r\n$4\r\nPING\r\n");
         }
 
         public async Task<string> SetAsync(string key, string value)
         {
             var command = $"set {key} {value}";
-            return await SendCommandAsync<string>(TransitionCommand(command));
+            return await SendCommandAsync(TransitionCommand(command));
         }
 
-        public async Task<T> GetAsync<T>(string key)
+        public async Task<string> GetAsync(string key)
         {
             var command = $"get {key}";
-            return await SendCommandAsync<T>(TransitionCommand(command));
+            return await SendCommandAsync(TransitionCommand(command));
+        }
+
+        public async Task<long> IncrAsync(string key)
+        {
+            var command = $"incr {key}";
+            return Convert.ToInt64(await SendCommandAsync(TransitionCommand(command)));
         }
 
         /// <summary>
@@ -133,16 +163,15 @@ namespace SimpleRedis
             return sbCommand.ToString();
         }
 
-        public Object AnalysisRequest(byte[] bytes)
+        public string AnalysisRequest(byte[] bytes)
         {
             var firstChar = bytes[0];
             switch (firstChar)
             {
                 case (byte)'+'://响应数据为简单字符串
                 case (byte)'-'://响应数据为错误信息
-                    return AnalysisSimpleOrErrorString(bytes);
                 case (byte)':'://响应数据为整数
-                    return AnalysisInteger(bytes);
+                    return AnalysisSimpleOrErrorString(bytes);
                 case (byte)'$'://响应数据为批量字符串
                     return AnalysisBatchString(bytes);
                 case (byte)'*'://响应数据为数组
@@ -173,17 +202,6 @@ namespace SimpleRedis
         private string AnalysisSimpleOrErrorString(byte[] bytes)
         {
             var result = Encoding.UTF8.GetString(bytes[1..^2]);
-            return result;
-        }
-
-        /// <summary>
-        /// 解析简单字符串或者错误信息
-        /// </summary>
-        /// <param name="bytes"></param>
-        /// <returns></returns>
-        private long AnalysisInteger(byte[] bytes)
-        {
-            var result = Convert.ToInt64(Encoding.UTF8.GetString(bytes[1..^2]));
             return result;
         }
 
