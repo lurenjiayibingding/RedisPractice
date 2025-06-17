@@ -7,7 +7,7 @@ import (
 )
 
 func TestPing(t *testing.T) {
-	simpleredis.Connect("127.0.0.1", 6379, "", 0)
+	simpleredis.Connect("127.0.0.1", 6379, "userName", "password", 0)
 	ping1, err := simpleredis.Ping()
 	if err != nil {
 		t.Error("Error in Ping")
