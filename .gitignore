@@ -1,0 +1,9 @@
+﻿################################################################################
+# 此 .gitignore 文件已由 Microsoft(R) Visual Studio 自动创建。
+################################################################################
+
+/.NET/RedisPractice/.vs
+/.NET/RedisPractice/SimpleConsole/obj/Debug/net8.0
+/.NET/RedisPractice/SimpleRedis/obj/Debug/net8.0
+/.NET/RedisPractice/Test/bin/Debug/net8.0
+/.NET/RedisPractice/Test/obj/Debug/net8.0
