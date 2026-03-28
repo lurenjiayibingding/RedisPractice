@@ -163,7 +163,7 @@ namespace SimpleRedis
             return sbCommand.ToString();
         }
 
-        public string AnalysisRequest(byte[] bytes)
+        public object AnalysisRequest(byte[] bytes)
         {
             var firstChar = bytes[0];
             switch (firstChar)
@@ -191,7 +191,7 @@ namespace SimpleRedis
                 default:
                     break;
             }
-            return string.Empty;
+            return null;
         }
 
         /// <summary>
