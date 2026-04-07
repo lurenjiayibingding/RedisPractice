@@ -91,7 +91,7 @@ namespace SimpleRedis
                     memoryStream.Write(receiveBuffer, 0, readLength);
                 }
                 var byteArray = memoryStream.ToArray();
-                return AnalysisRequest(byteArray);
+                return (string)AnalysisRequest(byteArray);
 
 
                 //await NetworkHelper.SimpleWaitForStreamToBeReadableAsync(_stream);
@@ -163,6 +163,11 @@ namespace SimpleRedis
             return sbCommand.ToString();
         }
 
+        /// <summary>
+        /// 转换Redis服务端响应的数据
+        /// </summary>
+        /// <param name="bytes"></param>
+        /// <returns></returns>
         public object AnalysisRequest(byte[] bytes)
         {
             var firstChar = bytes[0];
