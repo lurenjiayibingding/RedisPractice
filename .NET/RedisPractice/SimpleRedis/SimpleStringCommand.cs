@@ -31,5 +31,15 @@ namespace SimpleRedis
         {
             return null;
         }
+
+        /// <summary>
+        /// 发送异步的Incr请求
+        /// </summary>
+        /// <param name="key"></param>
+        /// <returns></returns>
+        public static Task<int> IncrAsync(string key)
+        {
+            return Task.Run(() => { return 0; });
+        }
     }
 }

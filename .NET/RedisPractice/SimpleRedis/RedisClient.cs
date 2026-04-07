@@ -41,6 +41,11 @@ namespace SimpleRedis
             _db = dbNum;
         }
 
+        public RedisClient(string appSetting)
+        {
+
+        }
+
         public async Task ConnectAsync()
         {
             _tcpClient = new TcpClient();
