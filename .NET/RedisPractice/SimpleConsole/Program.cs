@@ -9,7 +9,7 @@ namespace SimpleConsole
         {
             try
             {
-                RedisClient redisClient = new RedisClient("127.0.0.1", 6379, "");
+                RedisClient redisClient = await RedisClient.CreateClientAsync("127.0.0.1", 6379, "", "");
                 await redisClient.ConnectAsync();
                 var result = await redisClient.SetAsync("name", "Tom");
                 Console.WriteLine(result);

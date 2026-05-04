@@ -1,4 +1,5 @@
-﻿using SimpleRedis.Helper;
+﻿using SimpleRedis.Exceptions;
+using SimpleRedis.Helper;
 using System.Buffers.Binary;
 using System.IO;
 using System.Net.Http;
@@ -27,31 +28,56 @@ namespace SimpleRedis
         /// <summary>
         /// 构造函数
         /// </summary>
+        /// <param name="tcpClient"></param>
+        /// <param name="stream"></param>
         /// <param name="host"></param>
         /// <param name="port"></param>
         /// <param name="userName"></param>
         /// <param name="password"></param>
         /// <param name="dbNum"></param>
-        public RedisClient(string host, int port, string userName, string password, int dbNum = 0)
+        public RedisClient(TcpClient tcpClient, NetworkStream stream, string host, int port, string userName, string password, int dbNum = 0)
         {
             _host = host;
             _port = port;
             _username = userName;
             _password = password;
             _db = dbNum;
+            _tcpClient = tcpClient;
+            _stream = stream;
         }
 
-        public RedisClient(string appSetting)
+        /// <summary>
+        /// 异步工厂方法创建RedisClient实例
+        /// </summary>
+        /// <param name="host"></param>
+        /// <param name="port"></param>
+        /// <param name="userName"></param>
+        /// <param name="password"></param>
+        /// <param name="dbNum"></param>
+        /// <returns></returns>
+        public static async Task<RedisClient> CreateClientAsync(string host, int port, string userName, string password, int dbNum = 0)
         {
+            try
+            {
+                var tcpClient = new TcpClient();
+                await tcpClient.ConnectAsync(host, port);
+                var stream = tcpClient.GetStream();
 
+                return new RedisClient(tcpClient, stream, host, port, userName, password, dbNum);
+            }
+            catch (SocketException ex)
+            {
+                throw new RedisConnectionException($"无法连接到Redis服务器 {host}:{port}", ex);
+            }
         }
 
+        /// <summary>
+        /// 连接到Redis服务器并进行身份验证
+        /// </summary>
+        /// <returns></returns>
+        /// <exception cref="Exception"></exception>
         public async Task ConnectAsync()
         {
-            _tcpClient = new TcpClient();
-            await _tcpClient.ConnectAsync(_host, _port);
-            _stream = _tcpClient.GetStream();
-
             if (!string.IsNullOrWhiteSpace(_username) || !string.IsNullOrWhiteSpace(_password))
             {
                 var authCommand = string.Empty;
@@ -66,7 +92,7 @@ namespace SimpleRedis
                 var result = await SendCommandAsync(TransitionCommand(authCommand));
                 if (!string.Equals(result, "ok", StringComparison.InvariantCultureIgnoreCase))
                 {
-                    throw new Exception("用户名或者密码错误");
+                    throw new RedisAuthenticationException("用户名或者密码错误");
                 }
             }
         }
