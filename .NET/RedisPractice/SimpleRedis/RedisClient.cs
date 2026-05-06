@@ -18,7 +18,7 @@ namespace SimpleRedis
         private int _db;
         private TcpClient _tcpClient;
         private NetworkStream _stream;
-        private static ConcurrentDictionary<string, RedisClient> redisClients = new ConcurrentDictionary<string, RedisClient>();
+        private static ConcurrentDictionary<string, Lazy<Task<RedisClient>>> redisClients = new();
 
         /// <summary>
         /// 释放资源
@@ -60,14 +60,33 @@ namespace SimpleRedis
         /// <param name="password"></param>
         /// <param name="dbNum"></param>
         /// <returns></returns>
-        public static async Task<RedisClient> CreateClientAsync(string host, int port, string userName, string password, int dbNum = 0)
+        public static Task<RedisClient> CreateClientAsync(string host, int port, string userName, string password, int dbNum = 0)
         {
             var clientKey = GetClientKey(host, port, userName);
-            if (redisClients.TryGetValue(clientKey, out var existingClient))
+            try
             {
-                return existingClient;
+                var lazyClient = redisClients.GetOrAdd(clientKey, _ => new Lazy<Task<RedisClient>>(() => CreateNewClientAsync(host, port, userName, password, dbNum)));
+                return lazyClient.Value;
             }
+            catch (SocketException ex)
+            {
+                redisClients.TryRemove(clientKey, out _);
+                throw;
+            }
+        }
 
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="host"></param>
+        /// <param name="port"></param>
+        /// <param name="userName"></param>
+        /// <param name="password"></param>
+        /// <param name="dbNum"></param>
+        /// <returns></returns>
+        /// <exception cref="RedisConnectionException"></exception>
+        private static async Task<RedisClient> CreateNewClientAsync(string host, int port, string userName, string password, int dbNum = 0)
+        {
             try
             {
                 var tcpClient = new TcpClient();
@@ -75,7 +94,6 @@ namespace SimpleRedis
                 var stream = tcpClient.GetStream();
 
                 var newClient = new RedisClient(tcpClient, stream, host, port, userName, password, dbNum);
-                redisClients.TryAdd(clientKey, newClient);
                 return newClient;
             }
             catch (SocketException ex)
