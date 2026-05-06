@@ -1,14 +1,14 @@
 ﻿using SimpleRedis.Exceptions;
 using SimpleRedis.Helper;
-using System.Buffers.Binary;
-using System.IO;
-using System.Net.Http;
-using System.Net.Http.Headers;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Text;
 
 namespace SimpleRedis
 {
+    /// <summary>
+    /// 自定义的Redis客户端类，用于与Redis服务器进行通信
+    /// </summary>
     public class RedisClient : IDisposable
     {
         private string _host;
@@ -18,9 +18,14 @@ namespace SimpleRedis
         private int _db;
         private TcpClient _tcpClient;
         private NetworkStream _stream;
+        private static ConcurrentDictionary<string, RedisClient> redisClients = new ConcurrentDictionary<string, RedisClient>();
 
+        /// <summary>
+        /// 释放资源
+        /// </summary>
         public void Dispose()
         {
+            redisClients.TryRemove(GetClientKey(_host, _port, _username), out _);
             _stream?.Dispose();
             _tcpClient?.Dispose();
         }
@@ -57,18 +62,31 @@ namespace SimpleRedis
         /// <returns></returns>
         public static async Task<RedisClient> CreateClientAsync(string host, int port, string userName, string password, int dbNum = 0)
         {
+            var clientKey = GetClientKey(host, port, userName);
+            if (redisClients.TryGetValue(clientKey, out var existingClient))
+            {
+                return existingClient;
+            }
+
             try
             {
                 var tcpClient = new TcpClient();
                 await tcpClient.ConnectAsync(host, port);
                 var stream = tcpClient.GetStream();
 
-                return new RedisClient(tcpClient, stream, host, port, userName, password, dbNum);
+                var newClient = new RedisClient(tcpClient, stream, host, port, userName, password, dbNum);
+                redisClients.TryAdd(clientKey, newClient);
+                return newClient;
             }
             catch (SocketException ex)
             {
                 throw new RedisConnectionException($"无法连接到Redis服务器 {host}:{port}", ex);
             }
+        }
+
+        private static string GetClientKey(string host, int port, string userName)
+        {
+            return $"{host}:{port}:{userName}";
         }
 
         /// <summary>
