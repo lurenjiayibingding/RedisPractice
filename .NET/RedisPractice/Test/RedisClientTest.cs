@@ -10,7 +10,7 @@ namespace Test
         public async Task TestPingAsync()
         {
             var redisClient = await RedisClient.CreateClientAsync("127.0.0.1", 6380, "sa", "123qwe");
-            await redisClient.ConnectAsync();
+            await redisClient.AuthenticateAsync();
             var result = await redisClient.PingAsync();
             Assert.IsNotNull(result);
         }
@@ -23,7 +23,7 @@ namespace Test
         public async Task TestConnection()
         {
             var redisClient = await RedisClient.CreateClientAsync("127.0.0.1", 6380, "", "");
-            await redisClient.ConnectAsync();
+            await redisClient.AuthenticateAsync();
             var result = await redisClient.PingAsync();
             Assert.IsTrue(string.Equals(result, "OK", StringComparison.InvariantCultureIgnoreCase));
         }
@@ -32,7 +32,7 @@ namespace Test
         public async Task TestSetAsync()
         {
             var redisClient = await RedisClient.CreateClientAsync("127.0.0.1", 6379, "", "");
-            await redisClient.ConnectAsync();
+            await redisClient.AuthenticateAsync();
             var result = await redisClient.SetAsync("name", "Tom");
             Assert.IsTrue(string.Equals(result, "ok", StringComparison.InvariantCultureIgnoreCase));
         }
@@ -41,7 +41,7 @@ namespace Test
         public async Task TestGetAsync()
         {
             var redisClient = await RedisClient.CreateClientAsync("127.0.0.1", 6379, "", "");
-            await redisClient.ConnectAsync();
+            await redisClient.AuthenticateAsync();
             await redisClient.SetAsync("name", "Tom");
             var result = await redisClient.GetAsync("name");
             Assert.IsTrue(string.Equals(result, "Tom", StringComparison.InvariantCulture));
@@ -51,7 +51,7 @@ namespace Test
         public async Task TestGetAsync2()
         {
             var redisClient = await RedisClient.CreateClientAsync("127.0.0.1", 6379, "", "");
-            await redisClient.ConnectAsync();
+            await redisClient.AuthenticateAsync();
             await redisClient.SetAsync("count", "100");
             var result = await redisClient.IncrAsync("count");
             Assert.AreEqual(102, result);

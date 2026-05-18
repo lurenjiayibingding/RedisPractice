@@ -1,4 +1,4 @@
-﻿using SimpleRedis.Enum;
+using SimpleRedis.Enum;
 using SimpleRedis.Exceptions;
 using SimpleRedis.Helper;
 using System.Collections.Concurrent;
@@ -12,15 +12,16 @@ namespace SimpleRedis
     /// </summary>
     public class RedisClient : IDisposable
     {
-        private string _host;
-        private int _port;
-        private string _username;
-        private string _password;
-        private int _db;
+        private readonly string _host;
+        private readonly int _port;
+        private readonly string _username;
+        private readonly string _password;
+        private readonly int _db;
         private TcpClient _tcpClient;
         private NetworkStream _stream;
-        private int _connectStatus;
-        private static ConcurrentDictionary<string, Lazy<Task<RedisClient>>> redisClients = new();
+        private int _authenticateStatus;
+        private Timer _headTimer;
+        private static ConcurrentDictionary<string, Lazy<RedisClient>> redisClients = new();
 
         /// <summary>
         /// 释放资源
@@ -35,27 +36,23 @@ namespace SimpleRedis
         /// <summary>
         /// 构造函数
         /// </summary>
-        /// <param name="tcpClient"></param>
-        /// <param name="stream"></param>
         /// <param name="host"></param>
         /// <param name="port"></param>
         /// <param name="userName"></param>
         /// <param name="password"></param>
         /// <param name="dbNum"></param>
-        public RedisClient(TcpClient tcpClient, NetworkStream stream, string host, int port, string userName, string password, int dbNum = 0)
+        public RedisClient(string host, int port, string userName, string password, int dbNum = 0)
         {
             _host = host;
             _port = port;
             _username = userName;
             _password = password;
             _db = dbNum;
-            _tcpClient = tcpClient;
-            _stream = stream;
-            _connectStatus = (int)TcpConnectStatusEnum.Ununited;
+            _tcpClient = new TcpClient();
         }
 
         /// <summary>
-        /// 异步工厂方法创建RedisClient实例
+        /// 异步工厂方法创建RedisClient实例并且连接到Redis服务器
         /// </summary>
         /// <param name="host"></param>
         /// <param name="port"></param>
@@ -63,61 +60,76 @@ namespace SimpleRedis
         /// <param name="password"></param>
         /// <param name="dbNum"></param>
         /// <returns></returns>
-        public static Task<RedisClient> CreateClientAsync(string host, int port, string userName, string password, int dbNum = 0)
+        public static RedisClient CreateClientAsync(string host, int port, string userName, string password, int dbNum = 0)
         {
             var clientKey = GetClientKey(host, port, userName);
-            try
-            {
-                var lazyClient = redisClients.GetOrAdd(clientKey, _ => new Lazy<Task<RedisClient>>(() => CreateNewClientAsync(host, port, userName, password, dbNum)));
-                return lazyClient.Value;
-            }
-            catch (SocketException ex)
-            {
-                redisClients.TryRemove(clientKey, out _);
-                throw;
-            }
+            var lazyClient = redisClients.GetOrAdd(clientKey, _ => new Lazy<RedisClient>(() => new RedisClient(host, port, userName, password, dbNum)));
+            return lazyClient.Value;
         }
 
         /// <summary>
-        /// 创建客户端实例并连接到Redis服务器
+        /// 连接到Redis服务器端并且
         /// </summary>
-        /// <param name="host"></param>
-        /// <param name="port"></param>
-        /// <param name="userName"></param>
-        /// <param name="password"></param>
-        /// <param name="dbNum"></param>
-        /// <returns></returns>
-        public static async Task<RedisClient> GetClientAndConnectAsync(string host, int port, string userName, string password, int dbNum = 0)
-        {
-            var client = await CreateClientAsync(host, port, userName, password, dbNum);
-            await client.ConnectAsync();
-            return client;
-        }
-
-        /// <summary>
-        /// 具体的创建RedisClient实例的逻辑，包括连接到Redis服务器和进行身份验证  
-        /// </summary>
-        /// <param name="host"></param>
-        /// <param name="port"></param>
-        /// <param name="userName"></param>
-        /// <param name="password"></param>
-        /// <param name="dbNum"></param>
         /// <returns></returns>
         /// <exception cref="RedisConnectionException"></exception>
-        private static async Task<RedisClient> CreateNewClientAsync(string host, int port, string userName, string password, int dbNum = 0)
+        public async Task ConnectToServerAsync()
         {
             try
             {
-                var tcpClient = new TcpClient();
-                await tcpClient.ConnectAsync(host, port);
-                var stream = tcpClient.GetStream();
+                await _tcpClient.ConnectAsync(_host, _port);
+                var stream = _tcpClient.GetStream();
 
-                var newClient = new RedisClient(tcpClient, stream, host, port, userName, password, dbNum);
-                return newClient;
+                await AuthenticateAsync();
+
+                _headTimer = new Timer(async _ =>
+                {
+                    if (_tcpClient.Client.Poll(0, SelectMode.SelectRead) && _tcpClient.Client.Available == 0)
+                    {
+                        await CloseConnectAsync();
+                    }
+                }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
             }
             catch (SocketException ex)
             {
-                throw new RedisConnectionException($"无法连接到Redis服务器 {host}:{port}", ex);
+                throw new RedisConnectionException($"无法连接到Redis服务器 {_host}:{_port}", ex);
+            }
+        }
+
+        /// <summary>
+        /// 登录Redis服务器，发送AUTH命令进行身份验证，并根据服务器的响应更新连接状态
+        /// </summary>
+        /// <returns></returns>
+        /// <exception cref="Exception"></exception>
+        private async Task AuthenticateAsync()
+        {
+            if (!string.IsNullOrWhiteSpace(_username) || !string.IsNullOrWhiteSpace(_password))
+            {
+                var connectStatus = Volatile.Read(ref _authenticateStatus);
+                while (connectStatus is (int)AuthenticateStatusEnum.Unauthenticated or (int)AuthenticateStatusEnum.AuthenticationFailed)
+                {
+                    if (Interlocked.CompareExchange(ref _authenticateStatus, (int)AuthenticateStatusEnum.Authenticating, connectStatus) == connectStatus)
+                    {
+                        var authCommand = string.Empty;
+                        if (string.IsNullOrWhiteSpace(_username))
+                        {
+                            authCommand = $"AUTH {_password}";
+                        }
+                        else
+                        {
+                            authCommand = $"AUTH {_username} {_password}";
+                        }
+                        var result = await SendCommandAsync(TransitionCommand(authCommand));
+                        if (string.Equals(result, "ok", StringComparison.InvariantCultureIgnoreCase))
+                        {
+                            _authenticateStatus = (int)AuthenticateStatusEnum.Authenticated;
+                        }
+                        else
+                        {
+                            _authenticateStatus = (int)AuthenticateStatusEnum.Authenticated;
+                            throw new RedisAuthenticationException("用户名或者密码错误");
+                        }
+                    }
+                }
             }
         }
 
@@ -134,45 +146,13 @@ namespace SimpleRedis
         }
 
         /// <summary>
-        /// 连接到Redis服务器并进行身份验证
+        /// 主动关闭到Redis服务器的连接，释放相关资源，并从客户端字典中移除当前实例，以确保资源的正确管理和避免潜在的内存泄漏
         /// </summary>
         /// <returns></returns>
-        /// <exception cref="Exception"></exception>
-        public async Task ConnectAsync()
-        {
-            if (Interlocked.CompareExchange(ref _connectStatus, (int)TcpConnectStatusEnum.Connecting, (int)TcpConnectStatusEnum.Ununited) == (int)TcpConnectStatusEnum.Ununited)
-            {
-
-                if (!string.IsNullOrWhiteSpace(_username) || !string.IsNullOrWhiteSpace(_password))
-                {
-                    var authCommand = string.Empty;
-                    if (string.IsNullOrWhiteSpace(_username))
-                    {
-                        authCommand = $"AUTH {_password}";
-                    }
-                    else
-                    {
-                        authCommand = $"AUTH {_username} {_password}";
-                    }
-                    var result = await SendCommandAsync(TransitionCommand(authCommand));
-                    if (string.Equals(result, "ok", StringComparison.InvariantCultureIgnoreCase))
-                    {
-                        _ = Interlocked.CompareExchange(ref _connectStatus, (int)TcpConnectStatusEnum.Connected, (int)TcpConnectStatusEnum.Connecting);
-                    }
-                    else
-                    {
-                        throw new RedisAuthenticationException("用户名或者密码错误");
-                    }
-                }
-            }
-        }
-
         public async Task CloseConnectAsync()
         {
-            if (_tcpClient.Connected)
-            {
-                _tcpClient.Close();
-            }
+            await SendCommandAsync(TransitionCommand("QUIT"));
+            this.Dispose();
         }
 
         /// <summary>
