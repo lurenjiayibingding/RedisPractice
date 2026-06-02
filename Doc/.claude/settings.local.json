@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(dotnet test *)",
+      "Bash(dotnet workload list *)",
+      "Bash(dotnet workload install *)",
+      "Bash(dotnet --list-sdks)",
+      "Bash(dotnet --list-runtimes)"
+    ]
+  }
+}
