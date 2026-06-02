@@ -19,7 +19,8 @@ namespace SimpleRedis
         private readonly int _db;
         private TcpClient _tcpClient;
         private NetworkStream _stream;
-        private int _authenticateStatus;
+        private int _authenticateStatus;//0-未认证，1-认证中，2-认证成功，3-认证失败
+        private int _connectStatus;//0-未连接，1-连接中，2-连接成功，3-连接失败
         private Timer _headTimer;
         private static ConcurrentDictionary<string, Lazy<RedisClient>> redisClients = new();
 
@@ -68,6 +69,18 @@ namespace SimpleRedis
         }
 
         /// <summary>
+        /// 计算RedisClient在字典中的键，使用主机、端口和用户名的组合作为唯一标识
+        /// </summary>
+        /// <param name="host"></param>
+        /// <param name="port"></param>
+        /// <param name="userName"></param>
+        /// <returns></returns>
+        private static string GetClientKey(string host, int port, string userName)
+        {
+            return $"{host}:{port}:{userName}";
+        }
+
+        /// <summary>
         /// 连接到Redis服务器端并且
         /// </summary>
         /// <returns></returns>
@@ -77,9 +90,12 @@ namespace SimpleRedis
             try
             {
                 await _tcpClient.ConnectAsync(_host, _port);
-                var stream = _tcpClient.GetStream();
+                _stream = _tcpClient.GetStream();
 
-                await AuthenticateAsync();
+                if (!string.IsNullOrWhiteSpace(_username) || !string.IsNullOrWhiteSpace(_password))
+                {
+                    await AuthenticateAsync();
+                }
 
                 _headTimer = new Timer(async _ =>
                 {
@@ -93,6 +109,10 @@ namespace SimpleRedis
             {
                 throw new RedisConnectionException($"无法连接到Redis服务器 {_host}:{_port}", ex);
             }
+            catch (RedisAuthenticationException ex)
+            {
+                throw;
+            }
         }
 
         /// <summary>
@@ -102,47 +122,39 @@ namespace SimpleRedis
         /// <exception cref="Exception"></exception>
         private async Task AuthenticateAsync()
         {
-            if (!string.IsNullOrWhiteSpace(_username) || !string.IsNullOrWhiteSpace(_password))
+            var connectStatus = Volatile.Read(ref _authenticateStatus);
+            if (connectStatus is (int)AuthenticateStatusEnum.Unauthenticated or (int)AuthenticateStatusEnum.AuthenticationFailed)
             {
-                var connectStatus = Volatile.Read(ref _authenticateStatus);
-                while (connectStatus is (int)AuthenticateStatusEnum.Unauthenticated or (int)AuthenticateStatusEnum.AuthenticationFailed)
+                if (Interlocked.CompareExchange(ref _authenticateStatus, (int)AuthenticateStatusEnum.Authenticating, connectStatus) != connectStatus)
                 {
-                    if (Interlocked.CompareExchange(ref _authenticateStatus, (int)AuthenticateStatusEnum.Authenticating, connectStatus) == connectStatus)
-                    {
-                        var authCommand = string.Empty;
-                        if (string.IsNullOrWhiteSpace(_username))
-                        {
-                            authCommand = $"AUTH {_password}";
-                        }
-                        else
-                        {
-                            authCommand = $"AUTH {_username} {_password}";
-                        }
-                        var result = await SendCommandAsync(TransitionCommand(authCommand));
-                        if (string.Equals(result, "ok", StringComparison.InvariantCultureIgnoreCase))
-                        {
-                            _authenticateStatus = (int)AuthenticateStatusEnum.Authenticated;
-                        }
-                        else
-                        {
-                            _authenticateStatus = (int)AuthenticateStatusEnum.Authenticated;
-                            throw new RedisAuthenticationException("用户名或者密码错误");
-                        }
-                    }
+                    return;
+                }
+
+                var authCommand = string.Empty;
+                if (string.IsNullOrWhiteSpace(_username))
+                {
+                    authCommand = $"AUTH {_password}";
+                }
+                else
+                {
+                    authCommand = $"AUTH {_username} {_password}";
+                }
+                var result = await SendCommandAsync(TransitionCommand(authCommand));
+                if (string.Equals(result, "ok", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    Thread.VolatileWrite(ref _authenticateStatus, (int)AuthenticateStatusEnum.Authenticated);
+                }
+                else
+                {
+                    Thread.VolatileWrite(ref _authenticateStatus, (int)AuthenticateStatusEnum.AuthenticationFailed);
+                    throw new RedisAuthenticationException("用户名或者密码错误");
                 }
             }
         }
 
-        /// <summary>
-        /// 计算RedisClient在字典中的键，使用主机、端口和用户名的组合作为唯一标识
-        /// </summary>
-        /// <param name="host"></param>
-        /// <param name="port"></param>
-        /// <param name="userName"></param>
-        /// <returns></returns>
-        private static string GetClientKey(string host, int port, string userName)
+        private async Task SendHeartBeat()
         {
-            return $"{host}:{port}:{userName}";
+            await SendCommandAsync(TransitionCommand("PING"));
         }
 
         /// <summary>

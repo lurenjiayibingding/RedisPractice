@@ -72,7 +72,7 @@ namespace SimpleRedis
         /// <returns>切换数据库</returns>
         /// <exception cref="ArgumentOutOfRangeException"></exception>
         public async Task<string> SelectAsync(int dbNum)
-        {   
+        {
             if (dbNum < 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(dbNum), "数据库编号不能为负数");
