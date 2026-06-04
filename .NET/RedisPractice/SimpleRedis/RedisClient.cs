@@ -84,7 +84,7 @@ namespace SimpleRedis
         /// 连接到Redis服务器端并且
         /// </summary>
         /// <returns></returns>
-        /// <exception cref="RedisConnectionException"></exception>
+        /// <exception cref="RedisNetworkException"></exception>
         public async Task ConnectToServerAsync()
         {
             try
@@ -99,15 +99,12 @@ namespace SimpleRedis
 
                 _headTimer = new Timer(async _ =>
                 {
-                    if (_tcpClient.Client.Poll(0, SelectMode.SelectRead) && _tcpClient.Client.Available == 0)
-                    {
-                        await CloseConnectAsync();
-                    }
+                    await SendHeartBeat();
                 }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
             }
             catch (SocketException ex)
             {
-                throw new RedisConnectionException($"无法连接到Redis服务器 {_host}:{_port}", ex);
+                throw new RedisNetworkException($"无法连接到Redis服务器 {_host}:{_port}", ex);
             }
             catch (RedisAuthenticationException ex)
             {
@@ -152,9 +149,59 @@ namespace SimpleRedis
             }
         }
 
+        /// <summary>
+        /// Tcp保活机制，定时发送PING命令以保持与Redis服务器的连接活跃，并处理可能出现的连接超时或异常情况
+        /// </summary>
+        /// <returns></returns>
         private async Task SendHeartBeat()
         {
-            await SendCommandAsync(TransitionCommand("PING"));
+            try
+            {
+                var result = await SendCommandAsync(TransitionCommand("PING"));
+                if (string.Equals(result, "PONG", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                else
+                {
+                    await ReconnectAsync();
+                }
+            }
+            catch (SocketException ex)
+            {
+                await ReconnectAsync();
+                Console.WriteLine($"Socket Exception: {ex.Message}");
+            }
+            catch (RedisNetworkException ex)
+            {
+                await ReconnectAsync();
+                Console.WriteLine($"Socket Exception: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 进行TCP重连
+        /// </summary>
+        /// <returns></returns>
+        private async Task ReconnectAsync()
+        {
+            var connectStatus = Volatile.Read(ref _connectStatus);
+            if (connectStatus is (int)TcpConnectStatusEnum.Disconnected or (int)TcpConnectStatusEnum.ConnectionFailed)
+            {
+                if (Interlocked.CompareExchange(ref _connectStatus, (int)TcpConnectStatusEnum.Connecting, connectStatus) != connectStatus)
+                {
+                    return;
+                }
+                _stream.Dispose();
+                _tcpClient.Dispose();
+                _tcpClient = new TcpClient();
+                await _tcpClient.ConnectAsync(_host, _port);
+                _stream = _tcpClient.GetStream();
+                if (!string.IsNullOrWhiteSpace(_username) || !string.IsNullOrWhiteSpace(_password))
+                {
+                    await AuthenticateAsync();
+                }
+            }
         }
 
         /// <summary>
@@ -174,6 +221,12 @@ namespace SimpleRedis
         /// <returns></returns>
         public async Task<string> SendCommandAsync(string command)
         {
+            var connectStatus = Volatile.Read(ref _connectStatus);
+            if (connectStatus != (int)TcpConnectStatusEnum.Connected)
+            {
+                throw new RedisNetworkException("当前连接不可用");
+            }
+
             try
             {
                 var sendBuffer = Encoding.UTF8.GetBytes(command);

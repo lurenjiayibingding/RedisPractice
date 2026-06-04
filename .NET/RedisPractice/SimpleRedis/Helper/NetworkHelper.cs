@@ -1,4 +1,5 @@
 ﻿using System.Net.Sockets;
+using SimpleRedis.Exceptions;
 
 namespace SimpleRedis.Helper
 {
@@ -46,13 +47,15 @@ namespace SimpleRedis.Helper
                         }
                     }
 
-                    cts.Token.ThrowIfCancellationRequested();
-                    throw new TimeoutException("等待Socket可读超时取消");
+                    tcl.TrySetException(new RedisNetworkException("等待Socket可读超时"));
+                }
+                catch (OperationCanceledException)
+                {
+                    tcl.TrySetException(new RedisNetworkException("等待Socket可读超时"));
                 }
                 catch (Exception ex)
                 {
-                    tcl.TrySetException(ex);
-                    throw new Exception("等待Socket可读发生异常");
+                    tcl.TrySetException(new RedisNetworkException("等待Socket可读发生网络异常", ex));
                 }
             });
 
@@ -88,13 +91,16 @@ namespace SimpleRedis.Helper
                             return;
                         }
                     }
-                    cts.Token.ThrowIfCancellationRequested();
-                    throw new TimeoutException("等待Socket可读超时取消");
+
+                    tcl.TrySetException(new RedisNetworkException("等待Socket可读超时"));
+                }
+                catch (OperationCanceledException)
+                {
+                    tcl.TrySetException(new RedisNetworkException("等待Socket可读超时"));
                 }
                 catch (Exception ex)
                 {
-                    tcl.TrySetException(ex);
-                    throw new Exception("等待Socket可读发生异常");
+                    tcl.TrySetException(new RedisNetworkException("等待Socket可读发生网络异常", ex));
                 }
             });
 
