@@ -29,6 +29,12 @@ namespace SimpleRedis.Enum
         /// 连接失败
         /// </summary>
         [Description("连接失败")]
-        ConnectionFailed = 3
+        ConnectionFailed = 3,
+
+        /// <summary>
+        /// 断开连接
+        /// </summary>
+        [Description("断开连接")]
+        ConnectionClose = 4
     }
 }

@@ -19,10 +19,12 @@ namespace SimpleRedis
         private readonly int _db;
         private TcpClient _tcpClient;
         private NetworkStream _stream;
-        private int _authenticateStatus;//0-未认证，1-认证中，2-认证成功，3-认证失败
-        private int _connectStatus;//0-未连接，1-连接中，2-连接成功，3-连接失败
+        private volatile AuthenticateStatusEnum _authenticateStatus;//0-未认证，1-认证中，2-认证成功，3-认证失败
+        private volatile TcpConnectStatusEnum _connectStatus;//0-未连接，1-连接中，2-连接成功，3-连接失败
         private Timer _headTimer;
         private static ConcurrentDictionary<string, Lazy<RedisClient>> redisClients = new();
+        private readonly SemaphoreSlim _connectSemaphoreSlim;
+        private readonly SemaphoreSlim _authSemaphoreSlim;
 
         /// <summary>
         /// 释放资源
@@ -50,6 +52,8 @@ namespace SimpleRedis
             _password = password;
             _db = dbNum;
             _tcpClient = new TcpClient();
+            _connectSemaphoreSlim = new SemaphoreSlim(1, 1);
+            _authSemaphoreSlim = new SemaphoreSlim(1, 1);
         }
 
         /// <summary>
@@ -81,16 +85,29 @@ namespace SimpleRedis
         }
 
         /// <summary>
-        /// 连接到Redis服务器端并且
+        /// 连接到Redis服务器端并且进行身份认证，设置心跳保活
         /// </summary>
         /// <returns></returns>
         /// <exception cref="RedisNetworkException"></exception>
         public async Task ConnectToServerAsync()
         {
+            if (_connectStatus == TcpConnectStatusEnum.Connected)
+            {
+                return;
+            }
+
+            await _connectSemaphoreSlim.WaitAsync();
+            if (_connectStatus == TcpConnectStatusEnum.Connected)
+            {
+                return;
+            }
+
             try
             {
+                _connectStatus = TcpConnectStatusEnum.Connecting;
                 await _tcpClient.ConnectAsync(_host, _port);
                 _stream = _tcpClient.GetStream();
+                _connectStatus = TcpConnectStatusEnum.Connected;
 
                 if (!string.IsNullOrWhiteSpace(_username) || !string.IsNullOrWhiteSpace(_password))
                 {
@@ -100,15 +117,21 @@ namespace SimpleRedis
                 _headTimer = new Timer(async _ =>
                 {
                     await SendHeartBeat();
-                }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+                }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
             }
             catch (SocketException ex)
             {
+                _connectStatus = TcpConnectStatusEnum.ConnectionFailed;
                 throw new RedisNetworkException($"无法连接到Redis服务器 {_host}:{_port}", ex);
             }
             catch (RedisAuthenticationException ex)
             {
+                _connectStatus = TcpConnectStatusEnum.ConnectionFailed;
                 throw;
+            }
+            finally
+            {
+                _connectSemaphoreSlim.Release();
             }
         }
 
@@ -119,14 +142,14 @@ namespace SimpleRedis
         /// <exception cref="Exception"></exception>
         private async Task AuthenticateAsync()
         {
-            var connectStatus = Volatile.Read(ref _authenticateStatus);
-            if (connectStatus is (int)AuthenticateStatusEnum.Unauthenticated or (int)AuthenticateStatusEnum.AuthenticationFailed)
+            if (_authenticateStatus == AuthenticateStatusEnum.Authenticated)
             {
-                if (Interlocked.CompareExchange(ref _authenticateStatus, (int)AuthenticateStatusEnum.Authenticating, connectStatus) != connectStatus)
-                {
-                    return;
-                }
+                return;
+            }
+            _authenticateStatus = AuthenticateStatusEnum.Authenticating;
 
+            try
+            {
                 var authCommand = string.Empty;
                 if (string.IsNullOrWhiteSpace(_username))
                 {
@@ -139,13 +162,17 @@ namespace SimpleRedis
                 var result = await SendCommandAsync(TransitionCommand(authCommand));
                 if (string.Equals(result, "ok", StringComparison.InvariantCultureIgnoreCase))
                 {
-                    Thread.VolatileWrite(ref _authenticateStatus, (int)AuthenticateStatusEnum.Authenticated);
+                    _authenticateStatus = AuthenticateStatusEnum.Authenticated;
                 }
                 else
                 {
-                    Thread.VolatileWrite(ref _authenticateStatus, (int)AuthenticateStatusEnum.AuthenticationFailed);
+                    _authenticateStatus = AuthenticateStatusEnum.AuthenticationFailed;
                     throw new RedisAuthenticationException("用户名或者密码错误");
                 }
+            }
+            catch (RedisNetworkException ex)
+            {
+                throw;
             }
         }
 
@@ -155,6 +182,12 @@ namespace SimpleRedis
         /// <returns></returns>
         private async Task SendHeartBeat()
         {
+            if (_connectStatus == TcpConnectStatusEnum.ConnectionClose)
+            {
+                _headTimer.Dispose();
+                return;
+            }
+
             try
             {
                 var result = await SendCommandAsync(TransitionCommand("PING"));
@@ -185,13 +218,8 @@ namespace SimpleRedis
         /// <returns></returns>
         private async Task ReconnectAsync()
         {
-            var connectStatus = Volatile.Read(ref _connectStatus);
-            if (connectStatus is (int)TcpConnectStatusEnum.Disconnected or (int)TcpConnectStatusEnum.ConnectionFailed)
+            if (_connectStatus is TcpConnectStatusEnum.Disconnected or TcpConnectStatusEnum.ConnectionFailed)
             {
-                if (Interlocked.CompareExchange(ref _connectStatus, (int)TcpConnectStatusEnum.Connecting, connectStatus) != connectStatus)
-                {
-                    return;
-                }
                 _stream.Dispose();
                 _tcpClient.Dispose();
                 _tcpClient = new TcpClient();
@@ -221,8 +249,7 @@ namespace SimpleRedis
         /// <returns></returns>
         public async Task<string> SendCommandAsync(string command)
         {
-            var connectStatus = Volatile.Read(ref _connectStatus);
-            if (connectStatus != (int)TcpConnectStatusEnum.Connected)
+            if (_connectStatus != TcpConnectStatusEnum.Connected)
             {
                 throw new RedisNetworkException("当前连接不可用");
             }
@@ -254,7 +281,7 @@ namespace SimpleRedis
                 //var byteArray = memoryStream.ToArray();
                 //return AnalysisRequest(byteArray);
             }
-            catch (Exception ex)
+            catch (RedisNetworkException ex)
             {
                 Console.WriteLine(ex.Message);
                 throw;
