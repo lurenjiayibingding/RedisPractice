@@ -25,6 +25,7 @@ namespace SimpleRedis
         private static ConcurrentDictionary<string, Lazy<RedisClient>> redisClients = new();
         private readonly SemaphoreSlim _connectSemaphoreSlim;
         private readonly SemaphoreSlim _authSemaphoreSlim;
+        private readonly int _userCount;
 
         /// <summary>
         /// 释放资源
@@ -54,6 +55,7 @@ namespace SimpleRedis
             _tcpClient = new TcpClient();
             _connectSemaphoreSlim = new SemaphoreSlim(1, 1);
             _authSemaphoreSlim = new SemaphoreSlim(1, 1);
+            _userCount = 0;
         }
 
         /// <summary>
